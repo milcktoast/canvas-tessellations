@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>Tessellations</title>
+		<meta name="description" content="An interactive panelling system inspired by fractal and self-similar geometry." />
+		<meta charset="utf-8">
+		<style type="text/css">
+			body {
+				background-color: #fff; color: #777; margin: 0px; overflow: hidden; 
+				font-family: Georgia, Times, serif; font-size: 15px; cursor: crosshair;
+				width: 100%; height: 100%;
+			}
+			#geometry-info { position: absolute; left: 0; bottom: 0; line-height: 17px; margin: 0 0 2% 4%; padding: 0; }
+			a, big { color: #888; }
+			a:hover, .error { color:#C2007B; text-decoration: none; }
+			big { font-size: 24px; }
+			ul { list-style: none; }
+		</style>
+		<script type="text/javascript" src="vendor/three/Three_mod.js"></script>
+		<!--[if lt IE9]><script src="vendor/google/excanvas.min.js"></script><![endif]-->
+	</head>
+	<body>
+		<ul id="geometry-info">
+			<li>faces: <big id="faces">0</big></li>
+			<li>vertices: <big id="vertices">0</big></li>
+			<li>save: <a id="save-obj" href="#save-obj">OBJ</a> <a id="save-png" href="#save-png">PNG</a></li>
+		</ul>
+		<script type="text/javascript">
+		var	windowDims, windowMid, mousePos, mouseDown, mouseIgnore = false, shiftDn = false, commandDn = false, iever,
+			container, camera, plane, startMaterial, baseMaterial, scene, ditectionalLight, renderer, projector, minArea,
+			gridX = 24, gridY = 16, fCamScale = .2, fCamMin = 80, vertCount, faceCount, saveButton,
+			globalZ = new THREE.Vector3( 0, 0, 1 );
+
+			init();
+			setInterval( loop, 100/3 );
+
+			//	initialize environment and user interface
+			function init() {
+				iever = getIEVer();
+
+				container = document.createElement('div');
+				document.body.appendChild(container);
+
+				vertCount = $('vertices');
+				faceCount = $('faces');
+				saveObjButton = $('save-obj');
+				savePngButton = $('save-png');
+
+				windowDims = new THREE.Vector2( window.innerWidth, window.innerHeight );
+				windowMid = new THREE.Vector2( window.innerWidth / 2, window.innerHeight / 2 );
+				mousePos = new THREE.Vector2();
+
+				camera = new THREE.Camera( 70, window.innerWidth / window.innerHeight, 1, 10000 );
+
+				dLight = new THREE.DirectionalLight( 0xffffff );
+
+				startMaterial = new THREE.MeshBasicMaterial( { color: 0xdadada, wireframe: true, wireframe_linewidth: 0.1 } );
+				baseMaterial = new THREE.MeshLambertMaterial( { color: 0xffffff } );
+				plane = new THREE.Mesh( new Plane3E( 900, 600, gridX, gridY, startMaterial ), new THREE.MeshFaceMaterial() );
+
+				minArea = plane.geometry.faces[0].area * 0.04;
+
+				scene = new THREE.Scene();
+				scene.addLight( dLight );
+				scene.addObject( plane );
+
+				renderer = new THREE.CanvasRenderer();
+				renderer.setSize( windowDims.x, windowDims.y );
+				projector = new THREE.Projector();
+ 
+				container.appendChild( renderer.domElement );
+				if( iever != -1 && iever < 9 ) G_vmlCanvasManager.initElement( renderer.domElement );
+ 
+				vertCount.update( plane.geometry.vertices.length );
+				faceCount.update( plane.geometry.faces.length );
+
+				document.addEventListener( 'keydown', onDocumentKeyDown, false );
+				document.addEventListener( 'keyup', onDocumentKeyUp, false );
+
+				renderer.domElement.addEventListener( 'mousedown', onFrameMouseDown, false );
+				document.addEventListener( 'mouseup', onDocumentMouseUp, false );
+				document.addEventListener( 'mousemove', onDocumentMouseMove, false );
+
+				renderer.domElement.addEventListener('touchstart', onFrameTouchStart, false);
+				document.addEventListener('touchmove', onDocumentTouchMove, false );
+				document.addEventListener( 'touchend', onDocumentTouchEnd, false );
+
+				saveObjButton.addEventListener( 'click', saveObj, false );
+				savePngButton.addEventListener( 'click', savePng, false );
+				document.addEventListener( 'contextmenu', onContextMenu, false );
+
+			}
+
+			function $( id ) {
+			var	elem = document.getElementById( id );
+				elem.update = function( text ) {
+					this.innerText = text;
+					return this;
+				};
+				return elem;
+			}
+
+			//	get IE version
+			function getIEVer() {
+			var ua, re, rv = -1;
+				if( navigator.appName == 'Microsoft Internet Explorer' ) {
+					ua = navigator.userAgent;
+					re  = new RegExp( "MSIE ([0-9]{1,}[\.0-9]{0,})" );
+
+					if( re.exec(ua) != null ) rv = parseFloat( RegExp.$1 );
+				}
+				return rv;
+			}
+			//	key events
+			function onDocumentKeyDown( evt ) {
+				switch( evt.keyCode ) {
+					case 32 : // [space]
+						evt.preventDefault();
+					 	mouseIgnore = !mouseIgnore;
+						break;
+					case 16 : // [shift]
+						shiftDn = true;
+						break;
+					case 17 : // [control]
+					case 18 : // [option]
+					case 91 : // [command]
+						commandDn = true;
+						break;
+					case 83 : // [s]
+						if( shiftDn && commandDn ) saveObj();
+						shiftDn = commandDn = false;
+						break;
+				}
+			}
+			function onDocumentKeyUp( evt ) {
+				evt.preventDefault();
+				switch( evt.keyCode ) {
+					case 16 : 
+						shiftDn = false;
+						break;
+					case 17 :
+					case 18 :
+					case 91 :
+						commandDn = false;
+						break;
+				}
+			}
+			//	mouse events
+			function onFrameMouseDown( evt ) {
+				evt.preventDefault();
+				mouseDown = evt.button;
+				if( mouseDown === 0 ) findIntersections( evt );
+			}
+			function onDocumentMouseUp( evt ) {
+				evt.preventDefault();
+				vertCount.className = faceCount.className = "";
+				mouseDown = -1;
+			}
+			function onDocumentMouseMove( evt ) {
+				if( !mouseIgnore ) {
+					mousePos.x = evt.clientX - windowMid.x;
+					mousePos.y = evt.clientY - windowMid.y;
+				}
+
+				if( mouseDown === 0 ) {
+					findIntersections( evt );
+				}
+
+			}
+			//	disable menu allowing right-click for environment navigation
+			function onContextMenu( evt ) {
+				evt.preventDefault();
+				return false;
+			}
+			//	touch events
+			function onFrameTouchStart( evt ) {
+				evt.preventDefault();
+				mouseDown = evt.touches.length;
+				if( mouseDown === 1 ) findIntersections( evt );
+			}
+			function onDocumentTouchEnd( evt ) {
+				if( evt.touches.length == 0 ) {
+					evt.preventDefault();
+					vertCount.className = faceCount.className = "";
+					mouseDown = -1;
+				}
+			}
+			function onDocumentTouchMove( evt ) {
+				if( !mouseIgnore ) {
+					mousePos.x = evt.clientX - windowMid.x;
+					mousePos.y = evt.clientY - windowMid.y;
+				}
+
+				if( mouseDown >= 1 ) {
+					findIntersections( evt );
+				}
+			}
+			//	process scene and export obj
+			function saveObj( evt ) {
+				if( evt ) evt.preventDefault();
+				exportText( scene.exportObj( "Tessellations" ) );
+				return false;
+			}
+			function savePng( evt ) {
+				evt.preventDefault();
+				window.open( renderer.domElement.toDataURL( 'image/png' ), 'pngExport' );
+				return false;
+			}
+			function exportText( text ) {
+			    var	content = "data:application/plain;charset=utf-8," + escape( text );
+			    window.open( content, "objExport", "width=500,height=10" );
+			}
+			//	select faces in scene from user input
+			function findIntersections( evt ) {
+			var	vec, ray, inx;
+
+				vec = new THREE.Vector3( ( evt.clientX / window.innerWidth ) * 2 - 1, - ( evt.clientY / window.innerHeight ) * 2 + 1, 0.5 );
+				projector.unprojectVector( vec, camera );
+				ray = new THREE.Ray( camera.position, vec.subSelf( camera.position ).normalize() ),
+				inx = ray.intersectScene( scene );
+
+				if ( inx.length > 0 ) {
+					if( inx[0].face.area < minArea ) {
+						vertCount.className = faceCount.className = "error";
+
+					} else { 
+						vertCount.className = faceCount.className = "";
+						tessellate( inx );
+
+					}
+				}
+
+			}
+			//	fragment selected faces
+			function tessellate( inx ) {
+			var	a, b, c, i, f, tfc = [],
+				fid = inx[0].faceID,
+				obj = inx[0].object,
+				fce = inx[0].face,
+				geo = obj.geometry,
+				are = fce.area,
+				cnt = fce.centroid.clone(),
+				nrm = globalZ.clone(),
+				vrt = [ fce.a, fce.b, fce.c ],
+				ovl = geo.vertices.length,
+				dir = Math.round( Math.random() ) == 0 ? 1 : -1,
+				ext = Math.pow( are, 0.65 ) / 10 * dir;
+
+				nrm.multiplyScalar( ext );
+				cnt.addSelf( nrm );
+
+				geo.vertices.push( new THREE.Vertex( cnt ) );
+
+				for( i = 0; i < 3; i++ ) {
+					a = vrt[ i ];
+					b = ( i < 2 ) ? vrt[ i + 1 ] : vrt[ 0 ];
+					c = ovl;
+					f =  new THREE.Face3( a, b, c, null, baseMaterial);
+
+					tfc[ i ] = f;
+					geo.faces.push( f );
+
+				}
+
+				geo.faces.splice( fid, 1 );
+				geo.computeCentroids();
+				geo.computeFaceNormals();
+				geo.computeFaceAreas( tfc );
+
+				vertCount.update( geo.vertices.length );
+				faceCount.update( geo.faces.length );
+
+			}
+			//	main rendering loop
+			function loop() {
+				if( !mouseIgnore ) {
+
+				var	mult = ( mouseDown > 0 ) ? 2 : 0.25,
+					nx = ( mult * mousePos.x - camera.position.x ) * fCamScale,
+					ny = ( mult * -mousePos.y - camera.position.y ) * fCamScale, 
+					nz = ( 0.1 * mousePos.length() - camera.position.z ) * fCamScale + fCamMin;
+
+					dLight.position.x = camera.position.x += nx;
+					dLight.position.y = camera.position.y += ny;
+					dLight.position.z = camera.position.z += nz;
+					dLight.position.normalize();
+
+					camera.updateMatrix();
+				}
+
+				renderer.render( scene, camera );
+			}
+
+		</script>
+		<noscript><p>Sorry, this application requires javascript, please turn it on. :)</p></noscript>
+	</body> 
+</html>
